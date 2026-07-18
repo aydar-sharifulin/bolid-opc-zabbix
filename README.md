@@ -106,25 +106,33 @@ bolid.path[{#TYPE},{#ID}]
 
 ## Настройка
 
-Перед запуском необходимо указать параметры подключения:
+## Настройка
 
-```text
-OPC_URL
-ZABBIX_SERVER
-ZABBIX_HOST
-STATE_FILE
+Создайте файл `.env` на основе шаблона:
+
+```bash
+cp .env.example .env
 ```
 
-Пример:
+Заполните необходимые параметры:
 
 ```text
-OPC_URL=opc.tcp://192.168.10.100:4840
+# OPC UA
+OPC_URL=opc.tcp://192.168.10.100:4848
+OPC_ROOT_NODE=WorkPlace_saml1
+
+# Zabbix
 ZABBIX_SERVER=127.0.0.1
-ZABBIX_HOST=Bolid OPC
-STATE_FILE=/var/lib/bolid-opc-zabbix/last_states.json
+ZABBIX_HOST=Test OPC
+
+# Discovery
+DISCOVERY_KEY=bolid.discovery
+
+# Local state file
+STATE_FILE=last_states.json
 ```
 
-> **Важно:** не размещайте реальные адреса серверов, учетные данные и внутреннюю инфраструктурную информацию в публичном репозитории.
+Файл `.env` не должен публиковаться в Git. Для примера конфигурации используется `.env.example`.
 
 ## Запуск обнаружения
 
