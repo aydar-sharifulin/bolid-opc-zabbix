@@ -5,14 +5,17 @@ import os
 import re
 import subprocess
 import tempfile
+from dotenv import load_dotenv
 
+load_dotenv()
 
-OPC_URL = "opc.tcp://192.168.10.100:4848"
-ZABBIX_SERVER = "127.0.0.1"
-ZABBIX_HOST = "Test OPC"
-OPC_ROOT_NODE = "WorkPlace_saml1"
-DISCOVERY_KEY = "bolid.discovery"
+OPC_URL = os.getenv("OPC_URL")
+OPC_ROOT_NODE = os.getenv("OPC_ROOT_NODE")
 
+ZABBIX_SERVER = os.getenv("ZABBIX_SERVER")
+ZABBIX_HOST = os.getenv("ZABBIX_HOST")
+
+DISCOVERY_KEY = os.getenv("DISCOVERY_KEY", "bolid.discovery")
 
 def zabbix_send_discovery(key: str, value: str) -> bool:
     """
