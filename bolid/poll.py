@@ -6,22 +6,14 @@ import os
 import re
 import subprocess
 import time
-from dotenv import load_dotenv
 
-load_dotenv()
-
-
-start_time = time.perf_counter()
-
-
-OPC_URL = os.getenv("OPC_URL")
-OPC_ROOT_NODE = os.getenv("OPC_ROOT_NODE")
-
-ZABBIX_SERVER = os.getenv("ZABBIX_SERVER")
-ZABBIX_HOST = os.getenv("ZABBIX_HOST")
-
-STATE_FILE = os.getenv("STATE_FILE", "last_states.json")
-
+from bolid.config import (
+    OPC_URL,
+    OPC_ROOT_NODE,
+    ZABBIX_SERVER,
+    ZABBIX_HOST,
+    STATE_FILE,
+)
 
 
 def extract_id(name: str):
