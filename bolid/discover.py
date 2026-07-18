@@ -1,44 +1,52 @@
-from opcua import Client
+from typing import Optional
 
 import json
-import os
 import re
 import subprocess
-import tempfile
+
+from opcua import Client
 
 from bolid.config import (
-    OPC_URL,
-    OPC_ROOT_NODE,
-    ZABBIX_SERVER,
-    ZABBIX_HOST,
     DISCOVERY_KEY,
+    OPC_ROOT_NODE,
+    OPC_URL,
+    ZABBIX_HOST,
+    ZABBIX_SERVER,
 )
+
+
+SUPPORTED_OBJECT_TYPES = (
+    "Input_",
+    "Output_",
+    "Section_",
+    "GroupSection_",
+    "Reader_",
+    "Door_",
+    "Camera_",
+    "Device_",
+)
+
 
 def zabbix_send_discovery(key: str, value: str) -> bool:
     """
-    Передаёт JSON Low-Level Discovery в Zabbix через временный файл.
+    Передаёт JSON Low-Level Discovery в Zabbix через zabbix_sender.
 
-    Использование входного файла позволяет корректно передавать JSON,
-    содержащий пробелы, кавычки и символы Unicode.
+    Значение передаётся отдельным аргументом командной строки без shell,
+    поэтому JSON с пробелами, кавычками и символами Unicode обрабатывается
+    корректно.
     """
-    temp_name = None
-
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            delete=False,
-            encoding="utf-8",
-        ) as temp_file:
-            temp_name = temp_file.name
-            temp_file.write(f'"{ZABBIX_HOST}" {key} {value}\n')
-
         result = subprocess.run(
             [
                 "zabbix_sender",
                 "-z",
                 ZABBIX_SERVER,
-                "-i",
-                temp_name,
+                "-s",
+                ZABBIX_HOST,
+                "-k",
+                key,
+                "-o",
+                value,
             ],
             check=False,
             capture_output=True,
@@ -53,7 +61,7 @@ def zabbix_send_discovery(key: str, value: str) -> bool:
 
         if result.returncode != 0:
             print(
-                f"[ZABBIX ERROR] zabbix_sender завершился "
+                "[ZABBIX ERROR] zabbix_sender завершился "
                 f"с кодом {result.returncode}"
             )
             return False
@@ -71,56 +79,31 @@ def zabbix_send_discovery(key: str, value: str) -> bool:
         print(f"[ZABBIX ERROR] Не удалось запустить zabbix_sender: {error}")
         return False
 
-    finally:
-        if temp_name and os.path.exists(temp_name):
-            try:
-                os.remove(temp_name)
-            except OSError as error:
-                print(
-                    f"[WARNING] Не удалось удалить временный файл "
-                    f"{temp_name}: {error}"
-                )
 
-
-def detect_object_type(name: str):
+def detect_object_type(name: str) -> Optional[str]:
     """
     Определяет тип объекта БОЛИД по имени узла OPC UA.
+
+    Возвращает имя поддерживаемого типа вместе с завершающим
+    символом подчёркивания либо None.
     """
-    if name.startswith("Input_"):
-        return "Input_"
-
-    if name.startswith("Output_"):
-        return "Output_"
-
-    if name.startswith("Section_"):
-        return "section_"
-
-    if name.startswith("GroupSection_"):
-        return "GroupSection_"
-
-    if name.startswith("Reader_"):
-        return "Reader_"
-
-    if name.startswith("Door_"):
-        return "Door_"
-
-    if name.startswith("Camera_"):
-        return "Camera_"
-
-    if name.startswith("Device_"):
-        return "Device_"
+    for object_type in SUPPORTED_OBJECT_TYPES:
+        if name.startswith(object_type):
+            return object_type
 
     return None
 
 
-def extract_id(name: str):
+def extract_id(name: str) -> Optional[str]:
     """
     Извлекает цифровой идентификатор из имени объекта.
 
-    Пример:
+    Примеры:
         Input_123_SmokeDetector -> 123
+        Input_123               -> 123
+        GroupSection_45_Main    -> 45
     """
-    match = re.match(r"^[A-Za-z]+_(\d+)_", name)
+    match = re.match(r"^[A-Za-z]+_(\d+)(?:_|$)", name)
 
     if match:
         return match.group(1)
@@ -128,12 +111,13 @@ def extract_id(name: str):
     return None
 
 
-def extract_path(path: str):
+def extract_path(path: str) -> str:
     """
     Возвращает сокращённый путь объекта.
 
-    Если в пути присутствует Section_, возвращается название секции.
-    В противном случае возвращается полный путь.
+    Если в пути присутствует узел Section_, возвращает его название
+    без префикса и идентификатора. В противном случае возвращает
+    полный путь.
     """
     parts = path.split("/")
 
@@ -149,17 +133,28 @@ def extract_path(path: str):
     return path
 
 
-def find_state_nodes(node, path=""):
+def find_state_nodes(node, path: str = "") -> list:
     """
     Рекурсивно обходит дерево OPC UA и находит поддерживаемые объекты,
-    содержащие переменную State.
+    содержащие дочернюю переменную State.
+
+    Возвращает список кортежей:
+
+        (
+            object_node,
+            object_type,
+            name_node,
+            state_node,
+            object_path,
+        )
     """
     results = []
 
     try:
         children = node.get_children()
         current_name = node.get_browse_name().Name
-    except Exception:
+    except Exception as error:
+        print(f"[WARNING] Не удалось прочитать узел OPC UA: {error}")
         return results
 
     current_path = f"{path}/{current_name}" if path else current_name
@@ -200,43 +195,76 @@ def find_state_nodes(node, path=""):
 
 def find_root_node(client: Client):
     """
-    Ищет рабочий корневой узел Орион Про среди объектов OPC UA.
+    Ищет настроенный корневой узел Орион Про среди объектов OPC UA.
+
+    Возвращает найденный узел либо None.
     """
     objects_node = client.get_objects_node()
 
-    for child in objects_node.get_children():
+    try:
+        children = objects_node.get_children()
+    except Exception as error:
+        print(f"[ERROR] Не удалось получить корневые объекты OPC UA: {error}")
+        return None
+
+    for child in children:
         try:
-            if child.get_browse_name().Name == OPC_ROOT_NODE:
+            child_name = child.get_browse_name().Name
+
+            if child_name == OPC_ROOT_NODE:
                 return child
+
         except Exception:
             continue
 
     return None
 
 
-def build_discovery_data(found_nodes):
+def build_discovery_data(found_nodes: list) -> tuple:
     """
     Формирует список объектов для Zabbix Low-Level Discovery.
+
+    Возвращает:
+
+        discovery_data — список LLD-объектов;
+        skipped_count — количество пропущенных объектов.
     """
     discovery_data = []
     skipped_count = 0
 
-    for object_node, object_type, name_node, state_node, path in found_nodes:
+    for (
+        object_node,
+        object_type,
+        name_node,
+        _state_node,
+        path,
+    ) in found_nodes:
         try:
             object_name = object_node.get_browse_name().Name
             object_id = extract_id(object_name)
 
-            if not object_id:
+            if object_id is None:
                 skipped_count += 1
+                print(
+                    "[WARNING] Не удалось определить ID объекта: "
+                    f"{object_name}"
+                )
                 continue
+
+            display_name = object_name
 
             if name_node is not None:
                 try:
-                    display_name = name_node.get_value()
-                except Exception:
-                    display_name = object_name
-            else:
-                display_name = object_name
+                    name_value = name_node.get_value()
+
+                    if name_value is not None and str(name_value).strip():
+                        display_name = str(name_value)
+
+                except Exception as error:
+                    print(
+                        "[WARNING] Не удалось прочитать Name объекта "
+                        f"{object_name}: {error}"
+                    )
 
             short_path = extract_path(path)
 
@@ -256,24 +284,36 @@ def build_discovery_data(found_nodes):
     return discovery_data, skipped_count
 
 
-def main():
+def main() -> None:
+    """
+    Подключается к OPC UA, выполняет обнаружение объектов и передаёт
+    результат Low-Level Discovery в Zabbix.
+    """
     client = Client(OPC_URL)
     connected = False
 
     try:
+        print(f"Подключение к OPC UA: {OPC_URL}")
+
         client.connect()
         connected = True
-        print(f"Подключено к {OPC_URL}")
+
+        print("Соединение с OPC UA установлено.")
 
         target_node = find_root_node(client)
 
         if target_node is None:
-            print(f'Узел "{OPC_ROOT_NODE}" не найден')
+            print(f'[ERROR] Корневой узел "{OPC_ROOT_NODE}" не найден.')
             return
+
+        print(f'Корневой узел найден: "{OPC_ROOT_NODE}"')
 
         found_nodes = find_state_nodes(target_node)
 
-        print(f"Обнаружено OPC UA-объектов со State: {len(found_nodes)}")
+        print(
+            "Обнаружено OPC UA-объектов с переменной State: "
+            f"{len(found_nodes)}"
+        )
 
         discovery_data, skipped_count = build_discovery_data(found_nodes)
 
@@ -283,17 +323,24 @@ def main():
             separators=(",", ":"),
         )
 
+        print("Сформированный Low-Level Discovery JSON:")
         print(payload)
 
-        sent = zabbix_send_discovery(DISCOVERY_KEY, payload)
+        sent = zabbix_send_discovery(
+            key=DISCOVERY_KEY,
+            value=payload,
+        )
 
-        print(f"Передано объектов в discovery: {len(discovery_data)}")
+        print(f"Подготовлено объектов для discovery: {len(discovery_data)}")
         print(f"Пропущено объектов: {skipped_count}")
 
         if sent:
             print("Discovery успешно передан в Zabbix.")
         else:
-            print("Discovery сформирован, но не передан в Zabbix.")
+            print(
+                "[ERROR] Discovery сформирован, "
+                "но не передан в Zabbix."
+            )
 
     except Exception as error:
         print(f"[ERROR] Ошибка выполнения discovery: {error}")
@@ -302,9 +349,13 @@ def main():
         if connected:
             try:
                 client.disconnect()
-                print("Соединение закрыто.")
+                print("Соединение с OPC UA закрыто.")
+
             except Exception as error:
-                print(f"[WARNING] Ошибка отключения от OPC UA: {error}")
+                print(
+                    "[WARNING] Ошибка отключения от OPC UA: "
+                    f"{error}"
+                )
 
 
 if __name__ == "__main__":
